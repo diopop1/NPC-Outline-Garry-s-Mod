@@ -6,7 +6,6 @@ This addon adds a stroke effect around NPCs, similar to the object recognition f
 • Important: The addon should also work with players, but this is not tested, so it is possible that the feature will not work, like others marked as "Experimental". For the addon to work, it must be enabled in the post-processing menu.
 _______________________________
 
-GitHub: https://github.com/diopop1/NPC-Outline-Garry-s-Mod
 Steam: https://steamcommunity.com/sharedfiles/filedetails/?id=3319562761
 
 Tags: Outline, Camera, NPC.
