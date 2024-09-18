@@ -107,7 +107,7 @@ if CLIENT then
 
 
             CPanel:AddControl("CheckBox", {
-                Label = "Check NPC Visibility (Experimental)",
+                Label = "Check NPC Visibility",
                 Command = "pp_npc_outline_visibility_check"
             })
 
@@ -175,12 +175,12 @@ if CLIENT then
         end
     end
 
+
  local function DrawOutline(entity)
     if not npc_outline_enabled:GetBool() then return end
 
     local maxDistance = npc_outline_distance:GetFloat()
     local maxTextDistance = npc_outline_text_distance:GetFloat()
-    local checkVisibility = npc_outline_visibility_check:GetBool()
     local dynamicEffects = npc_outline_dynamic:GetBool()
     local showText = npc_outline_show_text:GetBool()
     local showRagdolls = npc_outline_show_ragdolls:GetBool()
@@ -198,6 +198,31 @@ if CLIENT then
     if distance > maxDistance then
         return
     end
+    
+
+    -- Внутренняя функция проверки видимости
+    local function IsEntityVisible(entity)
+        if not IsValid(entity) then
+            return false -- Если сущность недействительна, она не видима
+        end
+
+        local player = LocalPlayer()
+        local trace = util.TraceLine({
+            start = player:GetShootPos(),
+            endpos = entity:GetPos() + Vector(0, 0, 10), -- небольшое смещение по оси Z
+            filter = {player, entity} -- Игрок и сущность не должны быть частью трассировки
+        })
+
+        return not trace.Hit -- Если трассировка не попала в что-то, значит, сущность видима
+    end
+
+    -- Получаем значение для проверки видимости
+    local checkVisibility = npc_outline_visibility_check:GetBool()
+
+    -- Если проверка видимости включена, используем функцию проверки
+    if checkVisibility and not IsEntityVisible(entity) then
+        return -- Если объект не виден, не рисуем контур
+    end
 
     local mins, maxs = entity:OBBMins(), entity:OBBMaxs()
 
@@ -213,54 +238,130 @@ if CLIENT then
     }
 
     local screenCorners = {}
-    local visible = false
+    local minX, minY = ScrW(), ScrH()
+    local maxX, maxY = 0, 0
 
     for _, corner in ipairs(corners) do
         local screenPos = entity:LocalToWorld(corner):ToScreen()
         table.insert(screenCorners, screenPos)
 
         if screenPos.visible then
-            visible = true
+            minX = math.min(minX, screenPos.x)
+            minY = math.min(minY, screenPos.y)
+            maxX = math.max(maxX, screenPos.x)
+            maxY = math.max(maxY, screenPos.y)
         end
-    end
-
-    if not visible or #screenCorners == 0 then
-        return
-    end
-
-    local minX, minY = ScrW(), ScrH()
-    local maxX, maxY = 0, 0
-
-    for _, corner in ipairs(screenCorners) do
-        minX = math.min(minX, corner.x)
-        minY = math.min(minY, corner.y)
-        maxX = math.max(maxX, corner.x)
-        maxY = math.max(maxY, corner.y)
     end
 
     if minX == ScrW() or minY == ScrH() or maxX == 0 or maxY == 0 then
         return
     end
 
-    local outlineColor = GetOutlineColor(entity)
+    local outlineColor = GetOutlineColor(entity) -- Убедитесь, что эта функция определена где-то еще
 
-    if dynamicEffects then
-        local currentTime = CurTime()
-        local sizeOffset = math.sin(currentTime * 2) * 5
-        local jitter = math.random() * 5
 
-        minX = minX - sizeOffset + jitter
-        minY = minY - sizeOffset + jitter
-        maxX = maxX + sizeOffset + jitter
-        maxY = maxY + sizeOffset + jitter
+local outlineVisible = true -- Переменная для отслеживания видимости рамки
+local outlineHideTime = 0 -- Время, в течение которого рамка будет скрыта
+local outlineHideDuration = 0 -- Длительность скрытия рамки
+local searchTime = 0 -- Время, в течение которого рамка пытается найти объект
+local searchDuration = 3 -- Длительность поиска объекта в секундах
+local outlineAlpha = 255 -- Начальная прозрачность рамки
+local fadeSpeed = 5 -- Скорость затухания
+local prevMinX, prevMinY, prevMaxX, prevMaxY
+local interpolationSpeed = 5 -- Скорость интерполяции
 
-        if math.random() < 0.0000000001 then
-            minX = minX + math.random(-50, 50)
-            minY = minY + math.random(-50, 50)
-            maxX = maxX + math.random(-50, 50)
-            maxY = maxY + sizeOffset + jitter
-        end
+
+
+-- Переменные для хранения предыдущих координат рамки и скорости интерполяции
+local prevMinX, prevMinY, prevMaxX, prevMaxY
+local interpolationSpeed = 5 -- Скорость интерполяции
+
+-- Функция интерполяции
+local function interpolate(from, to, alpha)
+    return from + (to - from) * alpha
+end
+
+if dynamicEffects then
+    -- Инициализируем предыдущие координаты при первом запуске
+    if not prevMinX then
+        prevMinX, prevMinY = minX, minY
+        prevMaxX, prevMaxY = maxX, maxY
     end
+
+    -- Если рамка не видима, проверяем, прошло ли время скрытия
+    if not outlineVisible then
+        outlineHideTime = outlineHideTime + FrameTime() -- Увеличиваем время скрытия
+
+        if outlineHideTime >= outlineHideDuration then
+            outlineVisible = true -- Рамка снова видима
+            outlineHideTime = 0 -- Сбрасываем время скрытия
+        end
+        return -- Если рамка не видима, выходим из функции
+    end
+
+    -- Проверка видимости объекта
+    local tr = util.TraceLine({
+        start = LocalPlayer():EyePos(),
+        endpos = entity:GetPos(),
+        filter = function(ent) return ent ~= LocalPlayer() end
+    })
+
+    if tr.Hit then
+        -- Если объект не виден, начинаем отсчет времени поиска
+        searchTime = searchTime + FrameTime()
+
+        if searchTime >= searchDuration then
+            -- Если прошло достаточно времени, скрываем рамку
+            outlineVisible = false
+            outlineHideDuration = math.random(1, 3) -- Случайная длительность скрытия от 1 до 3 секунд
+            outlineHideTime = 0 -- Сбрасываем время скрытия
+            searchTime = 0 -- Сбрасываем время поиска
+            return
+        end
+    else
+        -- Если объект виден, сбрасываем время поиска
+        searchTime = 0
+    end
+
+    -- Вероятность исчезновения рамки
+    if math.random() < 0.05 then -- 5% шанс, что рамка исчезнет
+        outlineVisible = false -- Скрываем рамку
+        outlineHideDuration = math.random(1, 3) -- Случайная длительность скрытия от 1 до 3 секунд
+        outlineHideTime = 0 -- Сбрасываем время скрытия
+        return
+    end
+
+    local jitter = math.random() * 5
+
+    -- Случайное изменение размера рамки
+    local sizeOffset = math.random(-3, 3) -- Изменяем размер рамки случайным образом
+
+    minX = minX - sizeOffset + jitter
+    minY = minY - sizeOffset + jitter
+    maxX = maxX + sizeOffset + jitter
+    maxY = maxY + sizeOffset + jitter
+
+    -- Интерполяция координат рамки
+    minX = interpolate(prevMinX, minX, FrameTime() * interpolationSpeed)
+    minY = interpolate(prevMinY, minY, FrameTime() * interpolationSpeed)
+    maxX = interpolate(prevMaxX, maxX, FrameTime() * interpolationSpeed)
+    maxY = interpolate(prevMaxY, maxY, FrameTime() * interpolationSpeed)
+
+    -- Обновляем предыдущие координаты для следующего кадра
+    prevMinX, prevMinY = minX, minY
+    prevMaxX, prevMaxY = maxX, maxY
+end
+
+-- Рисуем рамку только если она видима
+if outlineVisible then
+    local width = maxX - minX
+    local height = maxY - minY
+
+    -- Draw the outline
+    surface.SetDrawColor(outlineColor)
+    surface.DrawOutlinedRect(minX, minY, width, height)
+end
+
 
     local width = maxX - minX
     local height = maxY - minY
@@ -301,6 +402,7 @@ if CLIENT then
         surface.DrawText(text)
     end
 end
+
 
 
     local function DrawNPCOutline()
@@ -407,7 +509,7 @@ end
 [ diopop1 - development. ]
 [ ChatGPT - assistance in writing code. ]
 
-{ Version - 1.2 }
+{ Version - 1.3A }
 
 All rights reserved, but you can improve the addon and release it as an improved version but with me as the author of the original addon.
 */
