@@ -14,6 +14,7 @@ if CLIENT then
     local npc_outline_enable_hostility_detection = CreateClientConVar("pp_npc_outline_hostility_detection", "1", true, false)
     local npc_outline_show_players = CreateClientConVar("pp_npc_outline_show_players", "1", true, false)  -- New convar for player outlines
     local npc_outline_max_entities = CreateClientConVar("pp_npc_outline_max_entities", "0", true, false)
+    local npc_outline_accuracy = CreateClientConVar("pp_npc_outline_accuracy", "1", true, false)
 
 
 -- Создание нескольких шрифтов
@@ -116,6 +117,16 @@ if CLIENT then
                 Command = "pp_npc_outline_dynamic"
             })
 
+
+            CPanel:AddControl("Slider", {
+                Label = "The accuracy of the frame where 1 is extremely inaccurate",
+                Command = "pp_npc_outline_accuracy",
+                Type = "Int",
+                Min = "1",
+                Max = "4"
+            })
+
+
             CPanel:AddControl("CheckBox", {
                 Label = "Show NPC Name and HP (Experimental)",
                 Command = "pp_npc_outline_show_text"
@@ -135,6 +146,18 @@ if CLIENT then
                 Label = "Show Player Outlines (Experimental)",  -- Checkbox for player outlines
                 Command = "pp_npc_outline_show_players"
             })
+
+            CPanel:AddControl("Label", {
+                Text = "What is this for? This addon adds a stroke effect around NPCs, similar to the object recognition feature inspired by the Bodycam game.\n" ..
+                       "— — — — — — — — — — — — — \n" ..
+                       "| About the modification \n" ..
+                       "|                        \n" ..
+                       "| Version = 1.3B         \n" ..
+                       "| Stability = 8/10       \n" ..
+                       "| Developer = diopop1    \n" ..
+                       "|"
+            })
+
         end
     })
 
@@ -184,6 +207,7 @@ if CLIENT then
     local dynamicEffects = npc_outline_dynamic:GetBool()
     local showText = npc_outline_show_text:GetBool()
     local showRagdolls = npc_outline_show_ragdolls:GetBool()
+    local accuracy = npc_outline_accuracy:GetInt()
 
     if maxDistance == nil or maxTextDistance == nil then
         print("Error: maxDistance or maxTextDistance is nil.")
@@ -261,85 +285,95 @@ if CLIENT then
 
 
 local outlineVisible = true -- Переменная для отслеживания видимости рамки
-local outlineHideTime = 0 -- Время, в течение которого рамка будет скрыта
-local outlineHideDuration = 0 -- Длительность скрытия рамки
-local searchTime = 0 -- Время, в течение которого рамка пытается найти объект
-local searchDuration = 3 -- Длительность поиска объекта в секундах
-local outlineAlpha = 255 -- Начальная прозрачность рамки
-local fadeSpeed = 5 -- Скорость затухания
 local prevMinX, prevMinY, prevMaxX, prevMaxY
 local interpolationSpeed = 5 -- Скорость интерполяции
+-- Устанавливаем значение jitter в зависимости от accuracy
+    local jitter
+    if accuracy == 1 then
+        jitter = math.random(3, 5) -- Меньшее дребезжание для низкой точности
+    elseif accuracy == 2 then
+        jitter = math.random(5, 15) -- Среднее дребезжание
+    elseif accuracy == 3 then
+        jitter = math.random(25, 50) -- Большее дребезжание
+    elseif accuracy == 4 then
+        jitter = math.random(35, 75) -- Максимальное дребезжание
+    else
+        jitter = math.random(300, 500) -- Значение по умолчанию
+    end
 
+     -- Устанавливаем значение sizeOffset в зависимости от accuracy
+    local sizeOffset
+    if accuracy == 1 then
+        sizeOffset = math.random(-5, 5) -- Меньшее смещение для низкой точности
+    elseif accuracy == 2 then
+        sizeOffset = math.random(-15, 15) -- Среднее смещение
+    elseif accuracy == 3 then
+        sizeOffset = math.random(-30, 30) -- Большее смещение
+    elseif accuracy == 4 then
+        sizeOffset = math.random(-50, 50) -- Максимальное смещение
+    else
+        sizeOffset = math.random(-15, 15) -- Значение по умолчанию
+    end
 
-
--- Переменные для хранения предыдущих координат рамки и скорости интерполяции
-local prevMinX, prevMinY, prevMaxX, prevMaxY
-local interpolationSpeed = 5 -- Скорость интерполяции
 
 -- Функция интерполяции
 local function interpolate(from, to, alpha)
     return from + (to - from) * alpha
 end
 
+-- Функция для получения величины скорости
+local function getVelocityMagnitude(entity)
+    return entity:GetVelocity():Length()
+end
+
+-- Основная функция для отображения и управления рамкой
 if dynamicEffects then
-    -- Инициализируем предыдущие координаты при первом запуске
+    -- Инициализация предыдущих координат при первом запуске
     if not prevMinX then
         prevMinX, prevMinY = minX, minY
         prevMaxX, prevMaxY = maxX, maxY
     end
 
-    -- Если рамка не видима, проверяем, прошло ли время скрытия
-    if not outlineVisible then
-        outlineHideTime = outlineHideTime + FrameTime() -- Увеличиваем время скрытия
-
-        if outlineHideTime >= outlineHideDuration then
-            outlineVisible = true -- Рамка снова видима
-            outlineHideTime = 0 -- Сбрасываем время скрытия
-        end
-        return -- Если рамка не видима, выходим из функции
-    end
-
-    -- Проверка видимости объекта
+    -- Проверка видимости объекта с помощью TraceLine
     local tr = util.TraceLine({
         start = LocalPlayer():EyePos(),
         endpos = entity:GetPos(),
         filter = function(ent) return ent ~= LocalPlayer() end
     })
 
-    if tr.Hit then
-        -- Если объект не виден, начинаем отсчет времени поиска
-        searchTime = searchTime + FrameTime()
-
-        if searchTime >= searchDuration then
-            -- Если прошло достаточно времени, скрываем рамку
-            outlineVisible = false
-            outlineHideDuration = math.random(1, 3) -- Случайная длительность скрытия от 1 до 3 секунд
-            outlineHideTime = 0 -- Сбрасываем время скрытия
-            searchTime = 0 -- Сбрасываем время поиска
-            return
-        end
-    else
-        -- Если объект виден, сбрасываем время поиска
-        searchTime = 0
-    end
-
-    -- Вероятность исчезновения рамки
-    if math.random() < 0.05 then -- 5% шанс, что рамка исчезнет
-        outlineVisible = false -- Скрываем рамку
-        outlineHideDuration = math.random(1, 3) -- Случайная длительность скрытия от 1 до 3 секунд
-        outlineHideTime = 0 -- Сбрасываем время скрытия
-        return
-    end
-
-    local jitter = math.random() * 5
-
-    -- Случайное изменение размера рамки
-    local sizeOffset = math.random(-3, 3) -- Изменяем размер рамки случайным образом
+    -- Изменение размера рамки случайным образом
 
     minX = minX - sizeOffset + jitter
     minY = minY - sizeOffset + jitter
     maxX = maxX + sizeOffset + jitter
     maxY = maxY + sizeOffset + jitter
+
+    -- Получаем величину скорости объекта
+    local speed = getVelocityMagnitude(entity)
+
+    -- Добавляем случайное смещение в зависимости от скорости
+-- Определяем множитель в зависимости от значения accuracy
+    local multiplier
+ if accuracy == 1 then
+    multiplier = 0.1
+ elseif accuracy == 2 then
+    multiplier = 0.2
+ elseif accuracy == 3 then
+    multiplier = 0.3
+ elseif accuracy == 4 then
+    multiplier = 0.35
+ else
+    multiplier = 0.2 -- Значение по умолчанию, если accuracy не соответствует ни одному из условий
+end
+
+-- Добавляем случайное смещение в зависимости от скорости
+local errorOffset = math.random(-speed * multiplier, speed * multiplier)
+
+
+    minX = minX + errorOffset
+    minY = minY + errorOffset
+    maxX = maxX + errorOffset
+    maxY = maxY + errorOffset
 
     -- Интерполяция координат рамки
     minX = interpolate(prevMinX, minX, FrameTime() * interpolationSpeed)
@@ -347,20 +381,12 @@ if dynamicEffects then
     maxX = interpolate(prevMaxX, maxX, FrameTime() * interpolationSpeed)
     maxY = interpolate(prevMaxY, maxY, FrameTime() * interpolationSpeed)
 
-    -- Обновляем предыдущие координаты для следующего кадра
+    -- Обновляем предыдущие координаты
     prevMinX, prevMinY = minX, minY
     prevMaxX, prevMaxY = maxX, maxY
 end
 
--- Рисуем рамку только если она видима
-if outlineVisible then
-    local width = maxX - minX
-    local height = maxY - minY
 
-    -- Draw the outline
-    surface.SetDrawColor(outlineColor)
-    surface.DrawOutlinedRect(minX, minY, width, height)
-end
 
 
     local width = maxX - minX
@@ -509,7 +535,7 @@ end
 [ diopop1 - development. ]
 [ ChatGPT - assistance in writing code. ]
 
-{ Version - 1.3A }
+{ Version - 1.3B }
 
 All rights reserved, but you can improve the addon and release it as an improved version but with me as the author of the original addon.
 */
