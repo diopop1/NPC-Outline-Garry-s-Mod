@@ -15,7 +15,10 @@ if CLIENT then
     local npc_outline_show_players = CreateClientConVar("pp_npc_outline_show_players", "1", true, false)  -- New convar for player outlines
     local npc_outline_max_entities = CreateClientConVar("pp_npc_outline_max_entities", "0", true, false)
     local npc_outline_accuracy = CreateClientConVar("pp_npc_outline_accuracy", "1", true, false)
-
+    local npc_outline_frame_disappears = CreateClientConVar("pp_npc_outline_frame_disappears", "1", true, false)
+    local npc_outline_frame_distortions = CreateClientConVar("pp_npc_outline_frame_distortions", "1", true, false)
+    local npc_outline_text_display = CreateClientConVar("pp_npc_outline_text_display", "1", true, false)
+    local npc_outline_show_transport = CreateClientConVar("pp_npc_outline_show_transport", "1", true, false)
 
 -- Создание нескольких шрифтов
 
@@ -106,10 +109,23 @@ if CLIENT then
                 Max = "100"
             })
 
+            CPanel:AddControl("Label", {
+                Text = "------- Additional options -------"
+            })
 
             CPanel:AddControl("CheckBox", {
                 Label = "Check NPC Visibility",
                 Command = "pp_npc_outline_visibility_check"
+            })
+
+            CPanel:AddControl("CheckBox", {
+                Label = "Enable Hostility Detection (Experimental)",
+                Command = "pp_npc_outline_hostility_detection"
+            })
+
+
+            CPanel:AddControl("Label", {
+                Text = "------- Dynamic effects -------"
             })
 
             CPanel:AddControl("CheckBox", {
@@ -127,9 +143,32 @@ if CLIENT then
             })
 
 
+             CPanel:AddControl("CheckBox", {
+                Label = "Frame Disappears (Experimental)",
+                Command = "pp_npc_outline_frame_disappears"
+            })
+
+            CPanel:AddControl("CheckBox", {
+                Label = "Additional Frame Distortions (Experimental)",
+                Command = "pp_npc_outline_frame_distortions"
+            })
+
+            CPanel:AddControl("Label", {
+                Text = "------- Text -------"
+            })
+
             CPanel:AddControl("CheckBox", {
                 Label = "Show NPC Name and HP (Experimental)",
                 Command = "pp_npc_outline_show_text"
+            })
+
+            CPanel:AddControl("CheckBox", {
+                Label = "Other text format",
+                Command = "pp_npc_outline_text_display"
+            })
+
+            CPanel:AddControl("Label", {
+                Text = "------- Displaying objects -------"
             })
 
             CPanel:AddControl("CheckBox", {
@@ -138,8 +177,8 @@ if CLIENT then
             })
 
             CPanel:AddControl("CheckBox", {
-                Label = "Enable Hostility Detection (Experimental)",
-                Command = "pp_npc_outline_hostility_detection"
+                Label = "Show Transport (Experimental)",
+                Command = "pp_npc_outline_show_transport"
             })
 
             CPanel:AddControl("CheckBox", {
@@ -152,7 +191,7 @@ if CLIENT then
                        "— — — — — — — — — — — — — \n" ..
                        "| About the modification \n" ..
                        "|                        \n" ..
-                       "| Version = 1.3B         \n" ..
+                       "| Version = 1.3C         \n" ..
                        "| Stability = 8/10       \n" ..
                        "| Developer = diopop1    \n" ..
                        "|"
@@ -162,24 +201,48 @@ if CLIENT then
     })
 
     -- Define the outline color function
-    local function GetOutlineColor(entity)
-        local a = npc_outline_a:GetInt()
+local function GetOutlineColor(entity)
+    local a = npc_outline_a:GetInt()
 
-        if npc_outline_enable_hostility_detection:GetBool() then
-            local hostileClasses = {"npc_combine_s", "npc_metropolice", "npc_antlion"}
-            local entityClass = entity:GetClass()
+    -- Пропускаем регдоллы, транспорт и игроков
+    if entity:IsRagdoll() or entity:IsVehicle() or entity:IsPlayer() then
+        return Color(npc_outline_r:GetInt(), npc_outline_g:GetInt(), npc_outline_b:GetInt(), a)  -- Цвет по умолчанию
+    end
 
-            for _, class in ipairs(hostileClasses) do
+    if npc_outline_enable_hostility_detection:GetBool() then
+        local hostileClasses = {
+            "npc_combine_s",
+            "npc_metropolice",
+            "npc_antlion",
+            "npc_zombie*",        -- Поддержка зомби
+            "npc_fastzombie*",    -- Поддержка быстрых зомби
+            "npc_headcrab*",      -- Поддержка всех зомби, начинающихся с npc_headcrab
+            "npc_zombine*",
+            "npc_antlionguard"
+        }
+        local entityClass = entity:GetClass()
+
+        -- Проверяем, является ли класс сущности враждебным
+        for _, class in ipairs(hostileClasses) do
+            -- Проверяем наличие символа * и сравниваем с префиксом
+            if class:find("%*") then
+                local prefix = class:gsub("%*", "")  -- Удаляем *
+                if entityClass:find(prefix) == 1 then
+                    return Color(255, 0, 0, a)  -- Красный цвет для враждебных NPC
+                end
+            else
                 if entityClass == class then
-                    return Color(255, 0, 0, a)
+                    return Color(255, 0, 0, a)  -- Красный цвет для враждебных NPC
                 end
             end
-
-            return Color(0, 255, 0, a)
         end
 
-        return Color(npc_outline_r:GetInt(), npc_outline_g:GetInt(), npc_outline_b:GetInt(), a)
+        return Color(0, 255, 0, a)  -- Зеленый цвет для нейтральных NPC
     end
+
+    -- Возвращаем цвет, заданный в настройках, если обнаружение враждебности отключено
+    return Color(npc_outline_r:GetInt(), npc_outline_g:GetInt(), npc_outline_b:GetInt(), a)
+end
 
  -- Функция для выбора шрифта в зависимости от расстояния
     local function GetFontByDistance(distance)
@@ -199,7 +262,147 @@ if CLIENT then
     end
 
 
- local function DrawOutline(entity)
+local frameRemovalStates = {}
+
+local function HandleFrameRemoval(entity, accuracy, disappears)
+    if not disappears then
+        return false -- If frame removal is disabled, return false
+    end
+
+    local speed = entity:GetVelocity():Length()
+    local removalDuration
+    if accuracy == 1 then
+        removalDuration = math.random(0.001, 3)
+    elseif accuracy == 2 then
+        removalDuration = math.random(0.001, 5)
+    elseif accuracy == 3 then
+        removalDuration = math.random(0.001, 7)
+    elseif accuracy == 4 then
+        removalDuration = math.random(0.001, 10)
+    else
+        removalDuration = math.random(0.001, 3)
+    end
+
+    local removalChance
+    if accuracy == 1 then
+        removalChance = math.random(0.00001, 0.0001)
+    elseif accuracy == 2 then
+        removalChance = math.random(0.0001, 0.001)
+    elseif accuracy == 3 then
+        removalChance = math.random(0.0005, 0.001)
+    elseif accuracy == 4 then
+        removalChance = math.random(0.0001, 0.001)
+    else
+        removalChance = math.random(0.00001, 0.0001)
+    end
+
+    local reducedSpeed
+    if accuracy == 1 then
+        reducedSpeed = speed / 1000000
+    elseif accuracy == 2 then
+        reducedSpeed = speed / 9500000
+    elseif accuracy == 3 then
+        reducedSpeed = speed / 9250000
+    elseif accuracy == 4 then
+        reducedSpeed = speed / 9000000
+    else
+        reducedSpeed = speed / 1000000
+    end
+
+    local currentTime = CurTime()
+    removalChance = removalChance + reducedSpeed
+
+    -- Инициализация состояния для текущего NPC, если оно еще не существует
+    if not frameRemovalStates[entity] then
+        frameRemovalStates[entity] = { removed = false, removalTime = 0 }
+    end
+
+    local frameRemoved = frameRemovalStates[entity].removed
+    local frameRemovalTime = frameRemovalStates[entity].removalTime
+
+    -- Check if the frame should be removed
+    if not frameRemoved and math.random() < removalChance then
+        frameRemoved = true
+        frameRemovalTime = currentTime + removalDuration
+        frameRemovalStates[entity].removed = true
+        frameRemovalStates[entity].removalTime = frameRemovalTime
+    end
+
+    -- If the frame is removed, check the time
+    if frameRemoved then
+        if currentTime < frameRemovalTime then
+            return true -- Frame is removed
+        else
+            frameRemoved = false -- Reset state after time expires
+            frameRemovalStates[entity].removed = false
+        end
+    end
+
+    return false -- Frame is not removed
+end
+
+
+-- Функция для рандомизации положения
+local function RandomizeOutlinePosition(entity, minX, minY, maxX, maxY, chance, accuracy)
+    -- Проверка, отключена ли функция
+    if npc_outline_frame_distortions:GetBool() == false then
+        return minX, minY, maxX, maxY -- Если функция отключена, просто возвращаем значения
+    end
+
+   local chance
+    if accuracy == 1 then
+        chance = math.random(0.00001, 0.0001)
+    elseif accuracy == 2 then
+        chance = math.random(0.0001, 0.001)
+    elseif accuracy == 3 then
+        chance = math.random(0.0005, 0.001)
+    elseif accuracy == 4 then
+        chance = math.random(0.0001, 0.001)
+    else
+        chance = math.random(0.00000001, 0.00001)
+    end
+
+    local Duration = math.random(0.01, 5)
+
+    -- Инициализация состояния для каждого NPC
+    if not entity.state then
+        entity.state = {
+            frame = false,
+            frameTime = 0,
+            offsetX = 0,
+            offsetY = 0
+        }
+    end
+
+    local currentTime = CurTime()
+
+    -- Проверка, должен ли фрейм быть активирован
+    if not entity.state.frame and math.random() < chance then
+        entity.state.frame = true
+        entity.state.frameTime = currentTime + Duration
+
+        -- Генерация случайных значений только один раз
+        entity.state.offsetX = math.random(-2500, 2500) -- Измените диапазон по вашему усмотрению
+        entity.state.offsetY = math.random(-2500, 2500) -- Измените диапазон по вашему усмотрению
+    end 
+
+    -- Если фрейм активен, рандомизируем позиции
+    if entity.state.frame then
+        if currentTime < entity.state.frameTime then
+            minX = minX + entity.state.offsetX
+            minY = minY + entity.state.offsetY
+            maxX = maxX + entity.state.offsetX
+            maxY = maxY + entity.state.offsetY
+        else
+            entity.state.frame = false -- Сброс состояния после истечения времени
+        end
+    end
+
+    return minX, minY, maxX, maxY -- Возвращаем значения
+end
+
+
+local function DrawOutline(entity)
     if not npc_outline_enabled:GetBool() then return end
 
     local maxDistance = npc_outline_distance:GetFloat()
@@ -208,9 +411,11 @@ if CLIENT then
     local showText = npc_outline_show_text:GetBool()
     local showRagdolls = npc_outline_show_ragdolls:GetBool()
     local accuracy = npc_outline_accuracy:GetInt()
+    local disappears = npc_outline_frame_disappears:GetBool() -- Checkbox for frame removal
+
+
 
     if maxDistance == nil or maxTextDistance == nil then
-        print("Error: maxDistance or maxTextDistance is nil.")
         return
     end
 
@@ -222,34 +427,39 @@ if CLIENT then
     if distance > maxDistance then
         return
     end
-    
 
-    -- Внутренняя функция проверки видимости
-    local function IsEntityVisible(entity)
-        if not IsValid(entity) then
-            return false -- Если сущность недействительна, она не видима
+    -- Internal function to check visibility
+local function IsEntityVisible(entity)
+    if not IsValid(entity) then
+        return false
+    end
+
+    local player = LocalPlayer()
+    local npc_outline_show_transport = GetConVar("pp_npc_outline_show_transport"):GetBool()
+
+    local trace = util.TraceLine({
+        start = player:GetShootPos(),
+        endpos = entity:GetPos() + Vector(0, 0, 10),
+        filter = function(ent)
+            if npc_outline_show_transport then
+                return ent ~= entity and ent:GetClass() ~= "lvs_wheeldrive_wheel" and ent:GetClass() ~= "gmod_sent_vehicle_fphysics_wheel" and ent ~= player
+            else
+                -- Используйте другой фильтр, если npc_outline_show_transport выключен
+                return ent ~= entity and ent ~= player
+            end
         end
+    })
 
-        local player = LocalPlayer()
-        local trace = util.TraceLine({
-            start = player:GetShootPos(),
-            endpos = entity:GetPos() + Vector(0, 0, 10), -- небольшое смещение по оси Z
-            filter = {player, entity} -- Игрок и сущность не должны быть частью трассировки
-        })
+    return not trace.Hit
+end
 
-        return not trace.Hit -- Если трассировка не попала в что-то, значит, сущность видима
-    end
+local checkVisibility = npc_outline_visibility_check:GetBool()
 
-    -- Получаем значение для проверки видимости
-    local checkVisibility = npc_outline_visibility_check:GetBool()
-
-    -- Если проверка видимости включена, используем функцию проверки
-    if checkVisibility and not IsEntityVisible(entity) then
-        return -- Если объект не виден, не рисуем контур
-    end
+if checkVisibility and not IsEntityVisible(entity) then
+    return
+end
 
     local mins, maxs = entity:OBBMins(), entity:OBBMaxs()
-
     local corners = {
         Vector(mins.x, mins.y, mins.z),
         Vector(mins.x, maxs.y, mins.z),
@@ -281,87 +491,64 @@ if CLIENT then
         return
     end
 
-    local outlineColor = GetOutlineColor(entity) -- Убедитесь, что эта функция определена где-то еще
+    local outlineColor = GetOutlineColor(entity)
+    local outlineVisible = true
+    local prevMinX, prevMinY, prevMaxX, prevMaxY
+    local interpolationSpeed = 5
 
-
-local outlineVisible = true -- Переменная для отслеживания видимости рамки
-local prevMinX, prevMinY, prevMaxX, prevMaxY
+    -- Set jitter and sizeOffset based on accuracy
+local jitter, sizeOffset
 local interpolationSpeed = 5 -- Скорость интерполяции
--- Устанавливаем значение jitter в зависимости от accuracy
-    local jitter
-    if accuracy == 1 then
-        jitter = math.random(3, 5) -- Меньшее дребезжание для низкой точности
-    elseif accuracy == 2 then
-        jitter = math.random(5, 15) -- Среднее дребезжание
-    elseif accuracy == 3 then
-        jitter = math.random(25, 50) -- Большее дребезжание
-    elseif accuracy == 4 then
-        jitter = math.random(35, 75) -- Максимальное дребезжание
-    else
-        jitter = math.random(300, 500) -- Значение по умолчанию
-    end
 
-     -- Устанавливаем значение sizeOffset в зависимости от accuracy
-    local sizeOffset
-    if accuracy == 1 then
-        sizeOffset = math.random(-5, 5) -- Меньшее смещение для низкой точности
-    elseif accuracy == 2 then
-        sizeOffset = math.random(-15, 15) -- Среднее смещение
-    elseif accuracy == 3 then
-        sizeOffset = math.random(-30, 30) -- Большее смещение
-    elseif accuracy == 4 then
-        sizeOffset = math.random(-50, 50) -- Максимальное смещение
-    else
-        sizeOffset = math.random(-15, 15) -- Значение по умолчанию
-    end
-
-
--- Функция интерполяции
-local function interpolate(from, to, alpha)
-    return from + (to - from) * alpha
+-- Устанавливаем значения jitter и sizeOffset в зависимости от accuracy и скорости
+if accuracy == 1 then
+    jitter = math.random(3, 5) -- Увеличиваем jitter в зависимости от скорости
+    sizeOffset = math.random(-5, 5) -- Увеличиваем sizeOffset в зависимости от скорости
+elseif accuracy == 2 then
+    jitter = math.random(5, 15)
+    sizeOffset = math.random(-15, 15) 
+elseif accuracy == 3 then
+    jitter = math.random(25, 50)
+    sizeOffset = math.random(-30, 30) 
+elseif accuracy == 4 then
+    jitter = math.random(35, 75)
+    sizeOffset = math.random(-50, 50)
+else
+    jitter = math.random(300, 500)
+    sizeOffset = math.random(-15, 15) 
 end
 
--- Функция для получения величины скорости
-local function getVelocityMagnitude(entity)
-    return entity:GetVelocity():Length()
-end
-
--- Основная функция для отображения и управления рамкой
-if dynamicEffects then
-    -- Инициализация предыдущих координат при первом запуске
-    if not prevMinX then
-        prevMinX, prevMinY = minX, minY
-        prevMaxX, prevMaxY = maxX, maxY
+    -- Interpolation function
+    local function interpolate(from, to, alpha)
+        return from + (to - from) * alpha
     end
 
-    -- Проверка видимости объекта с помощью TraceLine
-    local tr = util.TraceLine({
-        start = LocalPlayer():EyePos(),
-        endpos = entity:GetPos(),
-        filter = function(ent) return ent ~= LocalPlayer() end
-    })
+    -- Функция для получения величины скорости
+    local function getVelocityMagnitude(entity)
+        return entity:GetVelocity():Length()
+    end
 
-    -- Изменение размера рамки случайным образом
-
-    minX = minX - sizeOffset + jitter
-    minY = minY - sizeOffset + jitter
-    maxX = maxX + sizeOffset + jitter
-    maxY = maxY + sizeOffset + jitter
-
-    -- Получаем величину скорости объекта
-    local speed = getVelocityMagnitude(entity)
-
-    -- Добавляем случайное смещение в зависимости от скорости
--- Определяем множитель в зависимости от значения accuracy
+    -- Main outline display and management function
+    if dynamicEffects then
+        if not prevMinX then
+            prevMinX, prevMinY = minX, minY
+            prevMaxX, prevMaxY = maxX, maxY
+        end
+        
+        
+        -- После вычисления minX, minY, maxX, maxY
+        minX, minY, maxX, maxY = RandomizeOutlinePosition(entity, minX, minY, maxX, maxY, chance, accuracy)
+        local speed = getVelocityMagnitude(entity)
+    
     local multiplier
  if accuracy == 1 then
-    multiplier = 0.1
+    multiplier = 0.03
  elseif accuracy == 2 then
-    multiplier = 0.2
+    multiplier = 0.05
  elseif accuracy == 3 then
-    multiplier = 0.3
+    multiplier = 0.1
  elseif accuracy == 4 then
-    multiplier = 0.35
+    multiplier = 0.15
  else
     multiplier = 0.2 -- Значение по умолчанию, если accuracy не соответствует ни одному из условий
 end
@@ -370,65 +557,89 @@ end
 local errorOffset = math.random(-speed * multiplier, speed * multiplier)
 
 
-    minX = minX + errorOffset
-    minY = minY + errorOffset
-    maxX = maxX + errorOffset
-    maxY = maxY + errorOffset
+        minX = minX - sizeOffset + jitter + errorOffset
+        minY = minY - sizeOffset + jitter + errorOffset
+        maxX = maxX + sizeOffset + jitter + errorOffset
+        maxY = maxY + sizeOffset + jitter + errorOffset
 
-    -- Интерполяция координат рамки
-    minX = interpolate(prevMinX, minX, FrameTime() * interpolationSpeed)
-    minY = interpolate(prevMinY, minY, FrameTime() * interpolationSpeed)
-    maxX = interpolate(prevMaxX, maxX, FrameTime() * interpolationSpeed)
-    maxY = interpolate(prevMaxY, maxY, FrameTime() * interpolationSpeed)
+        minX = interpolate(prevMinX, minX, FrameTime() * interpolationSpeed)
+        minY = interpolate(prevMinY, minY, FrameTime() * interpolationSpeed)
+        maxX = interpolate(prevMaxX, maxX, FrameTime() * interpolationSpeed)
+        maxY = interpolate(prevMaxY, maxY, FrameTime() * interpolationSpeed)
 
-    -- Обновляем предыдущие координаты
-    prevMinX, prevMinY = minX, minY
-    prevMaxX, prevMaxY = maxX, maxY
-end
+        prevMinX, prevMinY = minX, minY
+        prevMaxX, prevMaxY = maxX, maxY
 
-
+        -- Handle frame removal
+        if HandleFrameRemoval(entity, accuracy, disappears) then
+            return -- Stop execution if the frame is removed
+        end
+    end
 
 
     local width = maxX - minX
     local height = maxY - minY
 
-    -- Draw the outline
+    
+
+ -- Рисуем контур
     surface.SetDrawColor(outlineColor)
     surface.DrawOutlinedRect(minX, minY, width, height)
 
+    -- Проверяем, нужно ли отображать текст
     if showText and distance <= maxTextDistance then
         local text
+        local hpText
+
+        -- Определяем текст в зависимости от типа сущности
         if entity:IsRagdoll() then
             text = "Unable to determine"
+            hpText = ""
         elseif entity:IsPlayer() then
-            text = entity:Nick() .. " - HP: " .. entity:Health()
+            text = entity:Nick()
+            hpText = "HP: " .. entity:Health()
         else
             local name = entity:GetClass()
             local hp = entity:Health()
-            text = name .. " - HP: " .. hp
+            text = name
+            hpText = "HP: " .. hp
         end
 
-        local screenSize = width 
         local selectedFont = GetFontByDistance(distance)
         
-        -- Set the font
+        -- Устанавливаем шрифт
         surface.SetFont(selectedFont)
         local textWidth, textHeight = surface.GetTextSize(text)
+        local hpWidth, hpHeight = surface.GetTextSize(hpText)
 
-        -- Calculate the text position
-        local centerX = (minX + maxX) / 2
-        local centerY = minY - (textHeight / 50) - 1
-
+        -- Рассчитываем позицию текста
+        local centerX = (minX + maxX) / 2.02
         local textPosX = centerX - (textWidth / 2)
-        local textPosY = centerY
+        local textPosY = minY - (textHeight / 50) - 1
 
-        -- Draw the text
-        surface.SetTextColor(outlineColor.r, outlineColor.g, outlineColor.b, outlineColor.a)
-        surface.SetTextPos(textPosX, textPosY)
-        surface.DrawText(text)
-    end
+        -- Проверяем значение ConVar для отображения текста
+        if npc_outline_text_display:GetBool() then
+            -- Отображение текста в строку
+            surface.SetTextColor(outlineColor.r, outlineColor.g, outlineColor.b, outlineColor.a)
+            surface.SetTextPos(textPosX, textPosY)
+            surface.DrawText(text .. " - " .. hpText) -- Объединяем текст в строку
+        else
+            -- Отображение HP под названием
+            surface.SetTextColor(outlineColor.r, outlineColor.g, outlineColor.b, outlineColor.a)
+            surface.SetTextPos(textPosX, textPosY)
+            surface.DrawText(text)
+
+            -- Рассчитываем позицию текста HP
+            local centerX = (minX + maxX) / 2.025
+            local hpPosX = centerX - (hpWidth / 2)
+            local hpPosY = textPosY + textHeight + 2 -- немного ниже названия
+
+            -- Рисуем HP
+            surface.SetTextPos(hpPosX, hpPosY)
+            surface.DrawText(hpText)
+        end -- Закрываем блок if для npc_outline_text_display:GetBool()
+    end -- Закрываем блок if для showText and distance <= maxTextDistance
 end
-
 
 
     local function DrawNPCOutline()
@@ -439,6 +650,7 @@ end
         local showRagdolls = npc_outline_show_ragdolls:GetBool()
         local showPlayers = npc_outline_show_players:GetBool()
         local maxEntities = npc_outline_max_entities:GetInt()  -- Get the maximum number of entities to outline
+        local showTransport = npc_outline_show_transport:GetBool()  -- Get the value for showing transport
 
         if maxDistance == nil then
             print("Error: maxDistance is nil.")
@@ -449,47 +661,154 @@ end
         local playerEyePos = LocalPlayer():EyePos()
 
         -- Function to process entities
-        local function ProcessEntities(entityClass)
-            local entities = ents.FindByClass(entityClass)
-            local count = 0
+    local function ProcessEntities(entityClass, exclusionClasses)
+        exclusionClasses = exclusionClasses or {}
+        local entities = ents.FindByClass(entityClass)
+        local count = 0
 
-            for _, entity in ipairs(entities) do
-                if IsValid(entity) then
-                    local entityPos = entity:GetPos()
+        for _, entity in ipairs(entities) do
+            if IsValid(entity) then
+             local entityPos = entity:GetPos()
 
-                    if entityPos:Distance(playerPos) <= maxDistance then
-                        if checkVisibility then
-                            local traceData = {
-                                start = playerEyePos,
-                                endpos = entity:EyePos(),
-                                filter = LocalPlayer(),
-                                mask = MASK_VISIBLE
-                            }
-                            local trace = util.TraceLine(traceData)
+            -- Проверка на исключение классов
+            local skip = false
+            for _, exclusionClass in ipairs(exclusionClasses) do
+                if string.match(entity:GetClass(), exclusionClass) then
+                    skip = true
+                    break
+                end
+            end
 
-                            if trace.Hit and trace.Entity ~= entity then
-                                continue
-                            end
-                        end
+            if skip then continue end
 
-                        DrawOutline(entity)
-                        count = count + 1
+            if entityPos:Distance(playerPos) <= maxDistance then
+                if checkVisibility then
+                    local traceData = {
+                        start = playerEyePos,
+                        endpos = entity:GetPos() + Vector(0, 0, 10),
+                        filter = LocalPlayer(),
+                        mask = MASK_VISIBLE
+                    }
+                    local trace = util.TraceLine(traceData)
 
-                        if maxEntities > 0 and count >= maxEntities then
-                            return
-                        end
+                    if trace.Hit and trace.Entity ~= entity then
+                        continue
                     end
+                end
+
+                DrawOutline(entity)
+                count = count + 1
+
+                if maxEntities > 0 and count >= maxEntities then
+                    return
                 end
             end
         end
-
+    end
+end
         -- Draw outlines for NPCs
-        ProcessEntities("npc_*")
+        ProcessEntities("npc_*", {"npc_grenade*", "npc_satchel*"})
 
         -- Draw outlines for ragdolls
         if showRagdolls then
             ProcessEntities("prop_ragdoll")
         end
+
+   if showTransport then    -- Обработка транспортных средств
+    -- Функция для проверки видимости транспортных средств
+    local function IsTransportEntityVisible(entity)
+        if not IsValid(entity) then
+            return false
+        end
+
+        local player = LocalPlayer()
+        local trace = util.TraceLine({
+            start = player:GetShootPos(),
+            endpos = entity:GetPos() + Vector(0, 0, 100),
+            filter = {player, entity}
+        })
+
+        return not trace.Hit
+    end
+
+    local function ProcessTransportEntities(entityClass, exclusionClasses)
+        exclusionClasses = exclusionClasses or {}
+        local entities = ents.FindByClass(entityClass)
+        local count = 0
+
+        for _, entity in ipairs(entities) do
+            if IsValid(entity) then
+                local entityPos = entity:GetPos()
+                local playerPos = LocalPlayer():GetPos()
+
+                -- Проверка на исключение классов
+                local skip = false
+                for _, exclusionClass in ipairs(exclusionClasses) do
+                    if string.match(entity:GetClass(), exclusionClass) then
+                        skip = true
+                        break
+                    end
+                end
+
+                if skip then continue end
+
+                if entityPos:Distance(playerPos) <= maxDistance then
+                    -- Проверка видимости для транспортных средств
+                    if not IsTransportEntityVisible(entity) then
+                        continue
+                    end
+
+                    -- Логика для рисования контуров
+                    local mins, maxs = entity:OBBMins(), entity:OBBMaxs()
+                    local corners = {
+                        Vector(mins.x, mins.y, mins.z),
+                        Vector(mins.x, maxs.y, mins.z),
+                        Vector(maxs.x, maxs.y, mins.z),
+                        Vector(maxs.x, mins.y, mins.z),
+                        Vector(mins.x, mins.y, maxs.z),
+                        Vector(mins.x, maxs.y, maxs.z),
+                        Vector(maxs.x, maxs.y, maxs.z),
+                        Vector(maxs.x, mins.y, maxs.z)
+                    }
+
+                    local screenCorners = {}
+                    local minX, minY = ScrW(), ScrH()
+                    local maxX, maxY = 0, 0
+
+                    for _, corner in ipairs(corners) do
+                        local screenPos = entity:LocalToWorld(corner):ToScreen()
+                        table.insert(screenCorners, screenPos)
+
+                        if screenPos.visible then
+                            minX = math.min(minX, screenPos.x)
+                            minY = math.min(minY, screenPos.y)
+                            maxX = math.max(maxX, screenPos.x)
+                            maxY = math.max(maxY, screenPos.y)
+                        end
+                    end
+
+                    if minX == ScrW() or minY == ScrH() or maxX == 0 or maxY == 0 then
+                        continue
+                    end
+
+                    DrawOutline(entity)  -- Вызов функции для рисования контура
+                    count = count + 1
+
+                    if maxEntities > 0 and count >= maxEntities then
+                        return
+                    end
+                end
+            end
+        end
+    end
+
+    -- Вызываем функцию для каждого класса транспортных средств
+    ProcessTransportEntities("prop_vehicle_*", {"prop_vehicle_prisoner_*"})
+    ProcessTransportEntities("sw_*", {})
+    ProcessTransportEntities("lvs_wheeldrive_*", {"lvs_wheeldrive_wheel", "lvs_wheeldrive_engine", "lvs_wheeldrive_steerhandler", "lvs_wheeldrive_trailerhitch", "lvs_wheeldrive_fueltank"})
+    ProcessTransportEntities("gmod_sent_vehicle_*", {"gmod_sent_vehicle_fphysics_wheel", "gmod_sent_vehicle_fphysics_attachment", "gmod_sent_vehicle_fphysics_gaspump*"})
+end
+
 
         -- Draw outlines for players
         if showPlayers then
@@ -535,7 +854,7 @@ end
 [ diopop1 - development. ]
 [ ChatGPT - assistance in writing code. ]
 
-{ Version - 1.3B }
+{ Version - 1.3C }
 
 All rights reserved, but you can improve the addon and release it as an improved version but with me as the author of the original addon.
 */
